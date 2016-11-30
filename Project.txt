@@ -1,0 +1,166 @@
+Pasos a realizar:
+
+ Necesitamos un mecanismo de comunicación basado en paso de mensajes.
+ La mayor parte de los ordenadores están conectados a través de redes TCP/IP,
+ en la mayor parte de los sistemas operativos modernos eso significa que tenemos que usar sockets.
+ 
+ Datagram sockets: no orientados a conexión, 
+ sin garantías de que los datos lleguen o lo hagan en el orden en el que se enviaron y basados en el protocolo UDP.
+ Utilizaremos datagram sockets basados en UDP porque son un poco más sencillos de utilizar y 
+ porque en una red de área local (LAN) es prácticamente imposible que se pierdan datos.
+ 
+ Un socket se crea con la llamada al sistema socket() y devuelve un descriptor de archivo con el que identificar 
+ al socket en cuestión en las futuras operaciones que queramos hacer con él.
+ 
+ 
+    #include <sys/socket.h>
+    ...
+    int fd = socket(domain, type, protocol)
+    
+-domain: dominio o familia de la dirección. Nosotros usaremos AF_INET 
+porque estamos interesados en la tecnología TCP/IP utilizada en Internet.
+
+-type. Indica el tipo de socket que nos interesa según los requisitos de la aplicación. 
+Tal y como hemos comentado, nosotros usaremos SOCK_DGRAM.
+
+-protocol. Indica el protocolo específico que queremos que sea utilizado internamente por el socket para el envío de los datos. 
+En nuestro caso la familia IP (AF_INET) con sockets tipo datagram (SOCK_DGRAM) sólo admite UDP como protocolo,
+por lo que este argumento debe ser 0.
+
+        #include <sys/socket.h>
+        ...
+        int fd = socket(domain, type, protocol);
+        if (fd < 0) {
+        std::cerr << "no se pudo crear el socket: " <<        
+        std::strerror(errno) << '\n';
+        return 3;        // Error. Termina el programa siempre con un valor > 0
+        }
+  
+  
+      
+Un socket es una abstracción que representa un extremo de un canal de comunicación entre dos procesos en una red de ordenadores.
+
+Para poder mandar un mensaje al socket de otro proceso este debe tener un nombre, una dirección única en la red. 
+Y lo mismo ocurre para que nuestro socket pueda recibir mensajes. 
+En la tecnología TCP/IP (AF_INET) la dirección de un socket se indica por la dirección IP de la máquina y 
+un número de puerto entre 1 y 65535.
+
+Una dirección se asigna a un socket que acabamos de crear mediante la llamada al sistema bind().
+
+#include <sys/socket.h>
+...
+
+int bind(int sockfd, const sockaddr* addr, socklen_t addrlen);
+
+
+
+Cada dominio utiliza un formato de dirección distinto para hacer referencia a cada extremo de la conexión. 
+Sin embargo la interfaz de socket fue diseñada con una interfaz genérica 
+que debe dar cabida a todas las tecnologías de comunicación existentes y futuras. 
+Por eso bind() no acepta una dirección IP y un número de puerto como parámetros. 
+En su lugar recibe una estructura sockaddr genérica que pueda dar cabida a cualquier tipo de dirección. 
+Nosotros en su lugar debemos utilizar una de las estructuras compatibles con sockaddr proporcionadas por el sistema, 
+en función del dominio en el que nos vayamos a comunicar.
+
+
+            struct sockaddr_in {
+               sa_family_t    sin_family;        // dominio: AF_INET
+               in_port_t      sin_port;        // número de puerto en
+                                                            // orden de bytes de la red.
+               struct in_addr sin_addr;        // dirección de internet
+            };
+            
+            // Dirección de internet
+            struct in_addr {
+               uint32_t       s_addr;                // dirección en orden de bytes
+            // de la red.
+            };
+            
+s_addr puede ser cualquier dirección IP, INADDR_LOOPBACK para hacer referencia 
+a la dirección 127.0.0.1 de la interfaz de red loopback de la máquina local o INADDR_ANY (0.0.0.0).
+    -Si estamos creando una dirección sockaddr_in para indicar con quién queremos comunicarnos, en ‘s_addr’ debemos 
+    indicar siempre la dirección IP del destinatario.
+    -Si por el contrario construimos la dirección sockaddr_in para asignarla al socket en nuestro extremo de la conexión,
+    en ‘s_addr’ debemos indicar una de las direcciones IP de nuestra máquina o INADDR_ANY si queremos escuchar por todas.
+
+La forma más sencilla de generar ‘s_addr’ a partir de una dirección IP guardada como una cadena de caracteres 
+con formato “X.X.X.X” es usando la función inet_aton(). Esta función se encarga de generar ‘s_addr’ en el orden de bytes de la red.
+
+sin_port es el número de puerto del socket entre 1 y 65525 o 0 si queremos que el sistema operativo 
+asigne uno cualquiera que esté disponible.
+    -Obviamente, Si estamos creando una dirección sockaddr_in para indicar con quién queremos comunicarnos, en ‘sin_port’ debemos 
+    indicar el puerto donde sabemos que está a la escucha nuestro interlocutor.
+    -Si por el contrario construimos la dirección sockaddr_in para asignarla al socket en nuestro extremo de la conexión,
+    en ‘sin_port’ podemos indicar 0 si no hay motivo por el que tengamos que usar un puerto concreto.
+    
+Si tenemos ‘s_addr’ o ‘sin_port’ en formato entero, tenemos que asegurarnos que están guardados en el orden de bytes de la red
+—que en Internet es big-endian— antes de copiarlos al campo correspondiente en la estructura sockaddr_in. Las funciones htonl() 
+y htons() pueden usarse para convertir enteros de 32 bits —como las direcciones IP que van en ‘s_addr’— o enteros de 16 bits
+—como los números de puerto— del orden de bytes usado por nuestra CPU al que espera la interfaz de comunicaciones.
+
+    #include <sys/socket.h>
+    #include <netinet/in.h>
+    
+    ...
+    // Dirección del socket local
+    sockaddr_in local_address{};        // Porque se recomienda inicializar a 0
+    local_address.sin_family = AF_INET;
+    local_address.sin_addr.s_addr = htonl(INADDR_ANY);
+    local_address.sin_port = htons(0);
+    // Asignar la dirección al socket local
+    int result = bind(fd, reinterpret_cast<const sockaddr*>(&local_address),
+            sizeof(local_address))
+    if (result < 0) {
+    std::cerr << "falló bind: " << std::strerror(errno) << '\n';
+    return 5;        // Error. Termina el programa siempre con un valor > 0
+    }
+    
+    
+[OPCIONAL] Implementa make_ip_address()
+
+Vas a tener que crear unas cuantas direcciones sockaddr_in para desarrollar esta versión de talk 
+así que te recomendamos que implementes la función:
+sockaddr_in make_ip_address(const std::string& ip_address, int port);
+de tal forma que devuelva una estructura sockaddr_in perfectamente inicializada con la dirección ip ‘ip_address’ 
+—recibida como una cadena de texto en formato X.X.X.X— y el número de puerto ‘port’.
+Si la dirección ip es una cadena vacía "" la dirección IP almacenada en sockaddr_in deberá ser INADDR_ANY.
+
+
+
+[OPCIONAL] Implementa la clase Socket o...
+
+C++ es un lenguaje orientado a objetos y los descriptores de archivo de los sockets junto con las llamadas al sistema 
+que los manejan se prestan a ser encapsuladas en una clase. Por eso te recomendamos que implementes la clase:
+
+    class Socket
+    {
+    public:
+        Socket(const sockaddr_in& address);
+        ~Socket();
+    };
+El constructor se encargaría de crear un socket, mediante la llamada al sistema socket(), 
+cuyo descriptor se puede gestionar de forma privada en la clase. Además este socket se conectaría a la dirección de Internet 
+especificada en el constructor, mediante la llamada al sistema bind().
+Obviamente en el destructor se debe cerrar el descriptor de archivo del socket para liberar sus recursos.
+Este diseño de la clase Socket donde los recursos necesarios se reservan en el constructor 
+y se liberan el destructor responde a un patrón de diseño característico de C++ denominado RAII.
+Es vital usarlo siempre que creemos clases que reservan algún recurso para garantizar que sea liberado de forma segura.
+De hecho, el motivo por el que se recomienda terminar una aplicación de C++ desde main() 
+—retornando de la función o invocando a std::exit() desde ella—es porque así estamos seguros de que se han destruido correctamente
+todos los objetos creados durante la vida de la aplicación. 
+No tenemos esa misma garantía si invocamos std::exit() desde cualquier otra función del programa, 
+pues así no serían llamados ni los destructores de los objetos creados dinámicamente con ‘new’ ni los destructores de los objetos
+creados localmente por las funciones invocadas para llegar a aquella desde la que se llama a std::exit().
+Alternativamente, si no sabes hacer lo anterior, puedes implementar la función make_socket()
+encargada de devolver un nuevo socket vinculado a la dirección indicada en los argumentos:
+int make_socket(const sockaddr_in& address);
+
+
+
+
+
+
+
+
+
+
